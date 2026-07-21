@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.clients.api_client import APIClient
+from src.clients.s3_client import S3Client
 from src.common.logger import logger
 
 RAW_DATA_DIR = Path("data/raw/orders")
@@ -49,6 +50,13 @@ def validate_records(records: list):
     logger.info(f"Validation passed: {len(records)} records look well-formed.")
 
 
+def build_partitioned_key(now: datetime) -> str:
+    return (
+        f"raw/products/year={now.year}/month={now.month:02d}/day={now.day:02d}/"
+        f"products_{now.strftime('%Y%m%d_%H%M%S')}.json"
+    )
+
+
 def fetch_orders():
     logger.info("Starting orders ingestion...")
 
@@ -57,15 +65,23 @@ def fetch_orders():
 
     validate_records(records)
 
+    now = datetime.now()
+    json_bytes = json.dumps(records, indent=2).encode("utf-8")
+
+    # Local write
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = RAW_DATA_DIR / f"orders_{timestamp}.json"
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
+    local_path = RAW_DATA_DIR / f"orders_{timestamp}.json"
+    with open(local_path, "wb") as f:
+        f.write(json_bytes)
+    logger.info(f"Raw data written locally to {local_path} ({len(records)} records)")
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(records, f, indent=2)
+    # S3 write
+    s3_client = S3Client()
+    s3_key = build_partitioned_key(now)
+    s3_uri = s3_client.upload_json(json_bytes, s3_key)
 
-    logger.info(f"Raw data written to {output_path} ({len(records)} records)")
-    return output_path
+    return {"local_path": local_path, "s3_uri": s3_uri}
 
 
 if __name__ == "__main__":
